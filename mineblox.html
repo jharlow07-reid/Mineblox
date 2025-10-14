@@ -1,0 +1,365 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Mineblox</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0f1116; }
+  canvas { display:block; width:100vw; height:100vh; touch-action:none; }
+  #hud {
+    position: fixed; top: 8px; left: 8px; right: 8px;
+    display: flex; gap: 8px; align-items: center; justify-content: space-between;
+    font-family: system-ui, -apple-system, Arial, sans-serif; color: #fff;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+    pointer-events: none;
+  }
+  .pill {
+    background: rgba(255,255,255,0.08);
+    padding: 6px 10px; border-radius: 10px;
+    display:flex; align-items:center; gap:8px;
+  }
+  #overlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.5);
+  }
+  .panel {
+    background: #20242e; color: white; padding: 20px; border-radius: 14px;
+    text-align: center; width: min(92vw, 460px); box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+    font-family: system-ui, -apple-system, Arial, sans-serif;
+  }
+  .panel h1 { margin: 0 0 6px; font-size: 26px; }
+  .panel p { margin: 8px 0; color: #cfd6e6; }
+  .btn {
+    margin-top: 10px; font-size: 18px; padding: 10px 16px; border-radius: 10px;
+    border: none; background: #49a9ff; color: white; box-shadow: 0 6px 16px rgba(73,169,255,0.35);
+  }
+  .btn:active { transform: translateY(1px); }
+  #shopBtn { pointer-events: auto; }
+  #tip {
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+    color:#cfd6e6; font-family: system-ui, -apple-system, Arial, sans-serif; font-size:14px;
+    background: rgba(255,255,255,0.06); padding:6px 10px; border-radius: 10px;
+  }
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud">
+    <div class="pill" id="scorePill">⛏️ Power: <b id="power">1</b></div>
+    <div class="pill">💎 Gems: <b id="gems">0</b></div>
+    <div class="pill">❤️ Lives: <b id="lives">3</b></div>
+    <button id="shopBtn" class="btn" style="pointer-events:auto">Shop</button>
+  </div>
+
+  <div id="tip">Tap blocks to mine them. TNT explodes!</div>
+
+  <div id="overlay">
+    <div class="panel">
+      <h1>MINEBLOX</h1>
+      <p>Mine blocks, collect gems, and upgrade your pickaxe.</p>
+      <p>Beware of TNT — it costs a life when it explodes.</p>
+      <button id="playBtn" class="btn">Play</button>
+    </div>
+  </div>
+
+  <div id="shop" style="display:none">
+    <div class="panel" style="position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);">
+      <h1>Shop</h1>
+      <p>Upgrade your pickaxe to mine faster.</p>
+      <p>Current Power: <b id="shopPower">1</b></p>
+      <p>Next Upgrade Cost: <b id="upgradeCost">5</b> 💎</p>
+      <button id="upgradeBtn" class="btn">Buy Upgrade</button>
+      <br>
+      <button id="closeShop" class="btn" style="background:#5b6b7a;margin-top:8px">Close</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha:false });
+  let W=0, H=0, dpr=1;
+
+  function resize() {
+    dpr = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = '100vw';
+    canvas.style.height = '100vh';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    W = window.innerWidth; H = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Grid config
+  const COLS = 8;
+  const ROWS = 12;
+  let cellSize = Math.floor(Math.min(W/ COLS, (H-60)/ ROWS));
+  let gridOffsetX = Math.floor((W - COLS*cellSize)/2);
+  let gridOffsetY = Math.floor((H - ROWS*cellSize)/2);
+
+  function recalcLayout() {
+    cellSize = Math.floor(Math.min(W/ COLS, (H-60)/ ROWS));
+    gridOffsetX = Math.floor((W - COLS*cellSize)/2);
+    gridOffsetY = Math.floor((H - ROWS*cellSize)/2);
+  }
+  window.addEventListener('resize', recalcLayout);
+
+  const TYPES = {
+    DIRT: 'dirt', STONE: 'stone', GEM: 'gem', TNT: 'tnt', EMPTY: 'empty'
+  };
+
+  const typeProps = {
+    dirt:  { hp: 2,  color:'#7a5e3a', yield:{gems:0}, score:1 },
+    stone: { hp: 4,  color:'#6c7a86', yield:{gems:0}, score:2 },
+    gem:   { hp: 5,  color:'#2aa7d7', yield:{gems:1}, score:5 },
+    tnt:   { hp: 3,  color:'#d9534f', yield:{gems:0}, score:0 },
+    empty: { hp: 0,  color:'transparent', yield:{}, score:0 }
+  };
+
+  function randomType() {
+    const r = Math.random();
+    if (r < 0.55) return TYPES.DIRT;
+    if (r < 0.85) return TYPES.STONE;
+    if (r < 0.95) return TYPES.GEM;
+    return TYPES.TNT;
+  }
+
+  function makeCell(type) {
+    const p = typeProps[type];
+    return { type, hp: p.hp };
+  }
+
+  let grid = [];
+  function fillGrid() {
+    grid = [];
+    for (let y=0; y<ROWS; y++) {
+      const row = [];
+      for (let x=0; x<COLS; x++) row.push(makeCell(randomType()));
+      grid.push(row);
+    }
+  }
+
+  function drawCell(x, y, cell) {
+    const px = gridOffsetX + x*cellSize;
+    const py = gridOffsetY + y*cellSize;
+    if (cell.type === TYPES.EMPTY) return;
+
+    // block shape
+    ctx.fillStyle = typeProps[cell.type].color;
+    ctx.fillRect(px+1, py+1, cellSize-2, cellSize-2);
+
+    // simple texture lines
+    ctx.globalAlpha = 0.15;
+    ctx.fillStyle = '#fff';
+    for (let i=0; i<3; i++) {
+      const rx = px + 4 + (i*7 % (cellSize-8));
+      ctx.fillRect(rx, py+4, 2, cellSize-8);
+    }
+    ctx.globalAlpha = 1;
+
+    // icons
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.font = Math.floor(cellSize*0.4)+'px system-ui, -apple-system, Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (cell.type === TYPES.GEM) ctx.fillText('💎', px+cellSize/2, py+cellSize/2);
+    if (cell.type === TYPES.TNT) ctx.fillText('🧨', px+cellSize/2, py+cellSize/2);
+
+    // hp bar
+    const prop = typeProps[cell.type];
+    if (prop.hp > 1) {
+      const ratio = Math.max(0, cell.hp) / prop.hp;
+      const barW = Math.floor((cellSize-8) * ratio);
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(px+4, py+cellSize-10, cellSize-8, 6);
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillRect(px+4, py+cellSize-10, barW, 6);
+    }
+  }
+
+  // Game state
+  let gems = 0, lives = 3, power = 1, score = 0;
+  const powerEl = document.getElementById('power');
+  const gemsEl = document.getElementById('gems');
+  const livesEl = document.getElementById('lives');
+  const overlay = document.getElementById('overlay');
+  const playBtn = document.getElementById('playBtn');
+  const shopDiv = document.getElementById('shop');
+  const shopBtn = document.getElementById('shopBtn');
+  const shopPower = document.getElementById('shopPower');
+  const upgradeCostEl = document.getElementById('upgradeCost');
+  const upgradeBtn = document.getElementById('upgradeBtn');
+  const closeShop = document.getElementById('closeShop');
+
+  function reset() {
+    gems = 0; lives = 3; power = 1; score = 0;
+    fillGrid();
+    updateHUD();
+  }
+
+  function updateHUD() {
+    powerEl.textContent = power;
+    gemsEl.textContent = gems;
+    livesEl.textContent = lives;
+    shopPower.textContent = power;
+    upgradeCostEl.textContent = nextUpgradeCost();
+  }
+
+  function nextUpgradeCost() {
+    return 5 + (power-1) * 5; // 5,10,15,20...
+  }
+
+  function openShop() {
+    shopDiv.style.display = 'block';
+  }
+  function closeShopPanel() {
+    shopDiv.style.display = 'none';
+  }
+
+  shopBtn.addEventListener('click', () => openShop());
+  closeShop.addEventListener('click', () => closeShopPanel());
+  upgradeBtn.addEventListener('click', () => {
+    const cost = nextUpgradeCost();
+    if (gems >= cost) {
+      gems -= cost;
+      power++;
+      updateHUD();
+    } else {
+      // brief bounce feedback by flashing shop text (simple)
+      upgradeBtn.textContent = 'Not enough 💎';
+      setTimeout(() => upgradeBtn.textContent = 'Buy Upgrade', 700);
+    }
+  });
+
+  playBtn.addEventListener('click', () => {
+    overlay.style.display = 'none';
+    reset();
+    draw(); // draw first frame
+  });
+
+  overlay.style.display = 'flex'; // show menu at start
+
+  function explode(x, y) {
+    // lose a life when TNT breaks; also clear neighbors lightly
+    lives--;
+    updateHUD();
+    // clear 3x3 around the TNT (turn to empty)
+    for (let j=-1; j<=1; j++) {
+      for (let i=-1; i<=1; i++) {
+        const cx = x+i, cy = y+j;
+        if (cx>=0 && cx<COLS && cy>=0 && cy<ROWS) {
+          grid[cy][cx] = makeCell(TYPES.EMPTY);
+        }
+      }
+    }
+    if (lives <= 0) gameOver();
+  }
+
+  function applyGravity() {
+    // For each column, pull blocks down into empty spaces
+    for (let x=0; x<COLS; x++) {
+      for (let y=ROWS-1; y>=0; y--) {
+        if (grid[y][x].type === TYPES.EMPTY) {
+          // find nearest non-empty above
+          let k = y-1;
+          while (k>=0 && grid[k][x].type === TYPES.EMPTY) k--;
+          if (k >= 0) {
+            grid[y][x] = grid[k][x];
+            grid[k][x] = makeCell(TYPES.EMPTY);
+          } else {
+            // spawn new at top
+            grid[0][x] = makeCell(randomType());
+          }
+        }
+      }
+    }
+  }
+
+  function mineCell(cx, cy) {
+    const cell = grid[cy][cx];
+    if (cell.type === TYPES.EMPTY) return;
+
+    cell.hp -= power;
+    if (cell.hp <= 0) {
+      // breaking reward/effect
+      const t = cell.type;
+      if (t === TYPES.GEM) gems += 1;
+      if (t === TYPES.TNT) explode(cx, cy);
+      score += typeProps[t].score;
+      grid[cy][cx] = makeCell(TYPES.EMPTY);
+      applyGravity();
+      updateHUD();
+    }
+  }
+
+  function pointerToCell(clientX, clientY) {
+    const x = (clientX - gridOffsetX);
+    const y = (clientY - gridOffsetY);
+    if (x < 0 || y < 0) return null;
+    const cx = Math.floor(x / cellSize);
+    const cy = Math.floor(y / cellSize);
+    if (cx<0 || cy<0 || cx>=COLS || cy>=ROWS) return null;
+    return {cx, cy};
+  }
+
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, '#0f1116');
+    g.addColorStop(1, '#18202e');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  function drawGrid() {
+    // grid panel shadow
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 12;
+    for (let y=0; y<ROWS; y++) {
+      for (let x=0; x<COLS; x++) drawCell(x,y,grid[y][x]);
+    }
+    ctx.shadowBlur = 0;
+  }
+
+  function draw() {
+    drawBackground();
+    drawGrid();
+    requestAnimationFrame(draw);
+  }
+
+  let pressCooldown = 0;
+  function handlePress(e) {
+    const touch = e.touches && e.touches[0];
+    const cx = touch ? touch.clientX : e.clientX;
+    const cy = touch ? touch.clientY : e.clientY;
+    const pos = pointerToCell(cx, cy);
+    if (!pos) return;
+
+    // simple cooldown to avoid super-fast mining by holding
+    const now = performance.now();
+    if (now - pressCooldown > 70) {
+      mineCell(pos.cx, pos.cy);
+      pressCooldown = now;
+    }
+  }
+
+  canvas.addEventListener('pointerdown', handlePress, { passive: true });
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.pressure > 0) handlePress(e);
+  }, { passive: true });
+  canvas.addEventListener('touchstart', handlePress, { passive: true });
+  canvas.addEventListener('touchmove', handlePress, { passive: true });
+
+  function gameOver() {
+    overlay.querySelector('h1').textContent = 'Game Over';
+    overlay.querySelector('p').textContent = 'You mined ' + score + ' points! Tap Play to try again.';
+    overlay.style.display = 'flex';
+  }
+})();
+</script>
+</body>
+</html>
